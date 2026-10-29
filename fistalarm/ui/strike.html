@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FistAlarm</title>
+<style>
+  /* 颜色集中在这里,方便整体调色。动画里不再散落色值。 */
+  :root {
+    --bg: #05070a;
+    --ink: #f2f5f8;
+    --ink-dim: #9aa6b2;
+    --accent: #ff4d3d;
+    --panel: rgba(12, 16, 22, 0.86);
+    --border: rgba(255, 255, 255, 0.14);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    /* 播放模式下不该出现任何文本选择光标或滚动条 */
+    user-select: none;
+    cursor: none;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+
+  #stage { position: fixed; inset: 0; }
+
+  #flash {
+    position: fixed; inset: 0;
+    background: #fff;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* 提醒文字层:碎裂动画播完后才出现 */
+  #notice {
+    position: fixed; inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    opacity: 0;
+    transition: opacity 420ms ease-out;
+    cursor: auto;
+  }
+  #notice.show { display: flex; }
+  #notice.visible { opacity: 1; }
+
+  #time-badge {
+    font-size: 20px;
+    letter-spacing: 0.28em;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  #message {
+    font-size: 48px;
+    font-weight: 600;
+    color: var(--ink);
+    text-align: center;
+    max-width: 76vw;
+    line-height: 1.35;
+    text-shadow: 0 6px 32px rgba(0, 0, 0, 0.8);
+  }
+
+  #message.empty { color: var(--ink-dim); font-size: 32px; font-weight: 400; }
+
+  #actions { display: flex; gap: 20px; margin-top: 12px; }
+
+  button {
+    font-family: inherit;
+    font-size: 18px;
+    padding: 14px 40px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  }
+  button:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.32); }
+  button:active { transform: translateY(0); }
+  button.primary { border-color: var(--accent); color: #fff; background: rgba(255, 77, 61, 0.22); }
+  button.primary:hover { background: rgba(255, 77, 61, 0.34); }
+
+  #hint {
+    position: fixed; bottom: 34px; width: 100%;
+    text-align: center;
+    font-size: 14px;
+    color: var(--ink-dim);
+    opacity: 0;
+    transition: opacity 600ms ease;
+  }
+  #hint.visible { opacity: 0.72; }
+
+  /* 调试开关:--debug 时跳过等待,便于反复看效果 */
+  #debug-bar {
+    position: fixed; top: 14px; left: 14px;
+    display: none;
+    gap: 10px;
+    z-index: 10;
+  }
+  #debug-bar.show { display: flex; }
+  #debug-bar button { font-size: 13px; padding: 6px 14px; }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="flash"></div>
+
+  <div id="notice">
+    <div id="time-badge"></div>
+    <div id="message"></div>
+    <div id="actions">
+      <button id="btn-close" class="primary">知道了</button>
+    </div>
+  </div>
+
+  <div id="hint">按 Esc 或点击"知道了"关闭</div>
+
+  <div id="debug-bar">
+    <button data-replay>重播</button>
+    <button data-skip>跳到结尾</button>
+  </div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * FistAlarm 碎屏动画
+ *
+ * 时序(毫秒):
+ *   0 ── 420   拳头从屏幕外砸入
+ *   420        命中:白闪 + 屏震
+ *   420 ─ 900  裂纹从命中点蔓延
+ *   560 ─ 2200 碎片带旋落、下落、淡出
+ *   1900 ─     提醒文字浮现
+ *
+ * 碎屏做法:真的用 Voronoi 把屏幕切成多边形,每块用 clip 从截图上裁下来,
+ * 再按"离命中点越近飞得越远"给每块一个初速度。这样比整块位移像玻璃得多。
+ * ------------------------------------------------------------------ */
+
+const cfg = {
+  impact: { x: null, y: null },   // 命中点,init 时按屏幕比例算
+  shardCount: 260,                 // 碎片数量(实际由网格决定,这里是网格密度参数)
+  shakeMs: 340,
+  maxShakePx: 26,
+};
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+const flashEl = document.getElementById("flash");
+const noticeEl = document.getElementById("notice");
+const messageEl = document.getElementById("message");
+const badgeEl = document.getElementById("time-badge");
+const hintEl = document.getElementById("hint");
+
+let W = 0, H = 0, DPR = 1;
+let baseImage = null;        // 截图(或纯黑降级)
+let shards = [];
+let fistProgress = 0;
+const startedAt = performance.now();
+let phase = "idle";
+let noticeShown = false;
+
+// 拳头素材图(漫画拳头 + 爆炸冲击线,透明背景)。与本页同目录的 assets/ 下。
+// 加载失败时回退到 Canvas 矢量画法(drawFistShape),保证断网/缺文件也能播。
+let fistImage = null;
+let fistImageReady = false;
+(function loadFist() {
+  const img = new Image();
+  img.onload = () => { fistImage = img; fistImageReady = true; };
+  img.onerror = () => { fistImageReady = false; };  // 回退矢量
+  img.src = "assets/fist.png";
+})();
+
+/* ---------------------------- 初始化 ---------------------------- */
+
+// 页面端计时回传:把关键节点耗时写进 player.log,定位"黑屏几秒才出拳头"卡在哪。
+// performance.now() 是页面内相对毫秒。pywebview 桥未就绪时静默跳过。
+function plog(msg) {
+  try {
+    if (window.pywebview && pywebview.api && pywebview.api.log) {
+      pywebview.api.log(`${msg} @${Math.round(performance.now())}ms`);
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
+window.__fistalarm_init = function (shotUrl, message, holdSeconds) {
+  plog("init 开始");
+  // holdSeconds:拳头停留时长(秒),来自配置。限定 1~3 秒;非法值则保持默认 2 秒。
+  const hold = Number(holdSeconds);
+  if (Number.isFinite(hold) && hold > 0) {
+    holdMs = clamp(hold, 1, 3) * 1000;
+  }
+  // message 一定由调用方给到最终要显示的文案(空备注已在 Python 侧回退为默认文案)。
+  // 这里只兜底极端情况:万一真的传了空,给一句话,不留白屏。
+  const text = (message && message.trim()) || "时间到";
+  messageEl.textContent = text;
+  const now = new Date();
+  badgeEl.textContent = String(now.getHours()).padStart(2, "0") + ":" +
+                        String(now.getMinutes()).padStart(2, "0");
+
+  // 命中点:屏幕正中——拳头正对屏幕中心砸下
+  cfg.impact.x = W * 0.5;
+  cfg.impact.y = H * 0.5;
+
+  if (shotUrl) {
+    const img = new Image();
+    img.onload = () => { plog("桌面截图加载完"); baseImage = img; buildShards(); };
+    // 图挂了也要能播——降级纯黑,不能卡在加载态
+    img.onerror = () => { plog("截图加载失败,降级纯黑"); baseImage = null; buildShards(); };
+    img.src = shotUrl;
+  } else {
+    buildShards();
+  }
+
+  resize();
+};
+
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+window.addEventListener("resize", () => {
+  resize();
+  if (baseImage) buildShards();
+});
+
+/* ------------------------- 碎片生成(Voronoi) ------------------------- */
+
+/**
+ * 生成 Voronoi 碎片的顶点。
+ *
+ * 做法:把屏幕铺一层带抖动的网格点,每块碎片 = 距它比距其他点都近的区域。
+ * 这个区域用"半平面切割"逐邻居裁出来(Sutherland–Hodgman)。
+ * 比引入第三方几何库轻得多,而效果是真多边形,不是方块。
+ */
+function buildShards() {
+  shards = [];
+  const cell = Math.max(46, Math.sqrt((W * H) / cfg.shardCount));
+  const cols = Math.ceil(W / cell) + 1;
+  const rows = Math.ceil(H / cell) + 1;
+
+  // 抖动比例低一点更像"整块玻璃裂开",太高会像马赛克
+  const jitter = cell * 0.22;
+  const points = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      points.push({
+        x: c * cell + (Math.random() * 2 - 1) * jitter,
+        y: r * cell + (Math.random() * 2 - 1) * jitter,
+      });
+    }
+  }
+
+  const bounds = [
+    { x: -40, y: -40 },
+    { x: W + 40, y: -40 },
+    { x: W + 40, y: H + 40 },
+    { x: -40, y: H + 40 },
+  ];
+
+  for (const p of points) {
+    let poly = bounds;
+    for (const q of points) {
+      if (q === p) continue;
+      poly = clipHalfPlane(poly, p, q);
+      if (poly.length < 3) break;
+    }
+    if (poly.length < 3) continue;
+
+    const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length;
+    const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length;
+    const dx = cx - cfg.impact.x;
+    const dy = cy - cfg.impact.y;
+    const dist = Math.hypot(dx, dy) || 1;
+
+    // 离命中点越近,飞得越快越远——冲击力的直观来源
+    const force = clamp(1 - dist / (Math.min(W, H) * 0.72), 0, 1);
+    const speed = 120 + force * 780;
+
+    shards.push({
+      poly,
+      cx, cy,
+      vx: (dx / dist) * speed + (Math.random() * 2 - 1) * 90,
+      vy: (dy / dist) * speed - (180 + force * 320) + (Math.random() * 2 - 1) * 90,
+      spin: (Math.random() * 2 - 1) * 6.2,
+      angle: 0,
+      delay: dist / (Math.min(W, H) * 1.5) * 0.16,
+      alpha: 1,
+      seed: Math.random(),
+    });
+  }
+  plog(`碎片生成完 ${shards.length} 块`);
+}
+
+/** 用直线 p→q 的中垂线所在半平面裁多边形。 */
+function clipHalfPlane(poly, p, q) {
+  // 保留靠 p 一侧:满足 dot(v - mid, q - p) <= 0
+  const nx = q.x - p.x;
+  const ny = q.y - p.y;
+  const mid = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const da = (a.x - mid.x) * nx + (a.y - mid.y) * ny;
+    const db = (b.x - mid.x) * nx + (b.y - mid.y) * ny;
+    const ain = da <= 0;
+    const bin = db <= 0;
+
+    if (ain) out.push(a);
+    if (ain !== bin) {
+      const t = da / (da - db);
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+  }
+  return out;
+}
+
+/* ----------------------------- 绘制 ----------------------------- */
+
+const T = {
+  fistStart: 0,
+  impactAt: 420,
+  crackDone: 900,
+  shardStart: 560,
+  shardEnd: 2250,
+  noticeAt: 1900,
+};
+
+// 拳头命中后停留多久再收回(毫秒)。可配置:1000~3000,由 __fistalarm_init 传入。
+// 这段时间里屏幕已碎、玻璃在飘落,拳头保持砸入姿态"钉"在画面中央。
+let holdMs = 2000;
+// 收回时长:停留结束后,拳头缓缓缩小后退、淡出所用的时间。
+const RETRACT_MS = 900;
+// 命中后拳头冲到的最大缩放
+const FIST_MAX_SCALE = 1.45;
+
+function frame(now) {
+  const t = now - startedAt;
+  if (!window.__firstFrameLogged) { window.__firstFrameLogged = true; plog("首帧渲染"); }
+
+  // 屏震:命中瞬间起,快速衰减
+  let shakeX = 0, shakeY = 0;
+  if (t > T.impactAt && t < T.impactAt + cfg.shakeMs) {
+    const k = 1 - (t - T.impactAt) / cfg.shakeMs;
+    const amp = cfg.maxShakePx * k * k;
+    shakeX = (Math.random() * 2 - 1) * amp;
+    shakeY = (Math.random() * 2 - 1) * amp;
+  }
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
+  const shattered = t >= T.shardStart;
+
+  if (!shattered) {
+    // 未碎:整屏显示截图(或纯黑)
+    drawWholeScreen();
+    if (t >= T.impactAt) drawCracks(clamp((t - T.impactAt) / (T.crackDone - T.impactAt), 0, 1));
+  } else {
+    // 已碎:黑底 + 碎片各自飞散
+    drawShattered(t);
+  }
+
+  // 拳头盖在最上层。生命周期(冲入→停留→收回)由 drawFist 内部按 holdMs 管理,
+  // 这里一直调,drawFist 到时自己停。
+  drawFist(t);
+
+  ctx.restore();
+
+  // 白闪
+  if (t >= T.impactAt && t < T.impactAt + 130) {
+    flashEl.style.opacity = String(1 - (t - T.impactAt) / 130);
+  } else if (t >= T.impactAt + 130) {
+    flashEl.style.opacity = "0";
+  }
+
+  // 提醒文字:等拳头收回之后再浮现,不和拳头抢画面
+  const noticeAt = T.impactAt + holdMs + RETRACT_MS * 0.5;
+  if (!noticeShown && t >= noticeAt) showNotice();
+
+  requestAnimationFrame(frame);
+}
+
+function drawWholeScreen() {
+  if (baseImage) {
+    ctx.drawImage(baseImage, 0, 0, W, H);
+  } else {
+    ctx.fillStyle = "#05070a";
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function drawShattered(t) {
+  ctx.fillStyle = "#04060a";
+  ctx.fillRect(0, 0, W, H);
+
+  const elapsed = t - T.shardStart;
+  for (const s of shards) {
+    const local = elapsed - s.delay * 1000;
+    if (local < 0) {
+      // 还没轮到它:原地不动,保持画面完整感
+      drawShard(s, 0, 0, 0, 1, 0, 0);
+      continue;
+    }
+    const sec = local / 1000;
+    const g = 1500;                        // 重力
+    const x = s.vx * sec;
+    const y = s.vy * sec + 0.5 * g * sec * sec;
+    const angle = s.spin * sec * 0.35;
+    // 越往后越透明,末尾整体消失
+    const life = (t - T.shardStart) / (T.shardEnd - T.shardStart);
+    const alpha = clamp(1 - Math.pow(life, 2.1), 0, 1);
+    drawShard(s, x, y, angle, alpha, sec);
+  }
+}
+
+function drawShard(s, dx, dy, angle, alpha, sec) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // 以碎片自身中心为轴旋转
+  const ox = s.cx + dx;
+  const oy = s.cy + dy;
+  ctx.translate(ox, oy);
+  ctx.rotate(angle);
+  ctx.translate(-s.cx, -s.cy);
+
+  ctx.beginPath();
+  ctx.moveTo(s.poly[0].x, s.poly[0].y);
+  for (let i = 1; i < s.poly.length; i++) ctx.lineTo(s.poly[i].x, s.poly[i].y);
+  ctx.closePath();
+  ctx.clip();
+
+  if (baseImage) {
+    ctx.drawImage(baseImage, 0, 0, W, H);
+  } else {
+    ctx.fillStyle = "#0a0f16";
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // 玻璃边缘:细亮线,碎片越多越像碎玻璃
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = alpha * 0.55;
+  ctx.translate(ox, oy);
+  ctx.rotate(angle);
+  ctx.translate(-s.cx, -s.cy);
+  ctx.beginPath();
+  ctx.moveTo(s.poly[0].x, s.poly[0].y);
+  for (let i = 1; i < s.poly.length; i++) ctx.lineTo(s.poly[i].x, s.poly[i].y);
+  ctx.closePath();
+  ctx.strokeStyle = "rgba(200, 226, 255, 0.5)";
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 从命中点向外蔓延的裂纹线。 */
+function drawCracks(progress) {
+  const { x, y } = cfg.impact;
+  const maxR = Math.hypot(W, H) * 0.62;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(228, 240, 255, 0.9)";
+  ctx.lineCap = "round";
+
+  const arms = 16;
+  for (let i = 0; i < arms; i++) {
+    const baseAngle = (i / arms) * Math.PI * 2 + (i % 2 ? 0.16 : -0.1);
+    let cx = x, cy = y;
+    let angle = baseAngle;
+    let radius = 0;
+
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    // 每段稍微拐一下,裂纹才不像直尺画的
+    while (radius < maxR * progress) {
+      const step = 26 + Math.random() * 22;
+      angle += (Math.random() * 2 - 1) * 0.22;
+      cx += Math.cos(angle) * step;
+      cy += Math.sin(angle) * step;
+      radius += step;
+      ctx.lineTo(cx, cy);
+    }
+    ctx.lineWidth = i % 3 === 0 ? 1.9 : 0.9;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** 拳头:从屏幕深处正对着你冲出来,由小变大,命中瞬间最大。
+
+    视角是"拳头朝你的脸砸过来",所以画的是**正面握拳**:
+    一排指节在上、四根手指的中节在下、拇指横压在手指前方。
+    由小到大的缩放模拟逼近感,比侧面飞入更能让人一眼认出是拳头。
+*/
+function drawFist(t) {
+  const cx = cfg.impact.x;
+  const cy = cfg.impact.y;
+
+  const holdEnd = T.impactAt + holdMs;        // 停留结束、开始收回
+  const retractEnd = holdEnd + RETRACT_MS;     // 彻底消失
+  if (t > retractEnd) return;                  // 收回完毕,不再画
+
+  let scale, alpha, y, angle;
+
+  if (t <= T.impactAt) {
+    // 阶段一:冲入——由小到大、略微下沉,像一拳从深处砸向屏幕
+    const p = clamp(t / T.impactAt, 0, 1);
+    const eased = p * p * (3 - 2 * p);
+    scale = 0.18 + eased * eased * (FIST_MAX_SCALE - 0.18);
+    alpha = 1;
+    y = cy - (1 - eased) * H * 0.04;
+    angle = (1 - eased) * 0.16;
+
+    // 冲入拖影:后面跟几个更小更淡的残影,强化速度
+    if (p > 0.08 && p < 0.98) {
+      for (let i = 1; i <= 3; i++) {
+        const back = eased - i * 0.06;
+        if (back < 0) continue;
+        const bs = 0.18 + back * back * (FIST_MAX_SCALE - 0.18);
+        ctx.save();
+        ctx.globalAlpha = 0.12 / i;
+        ctx.translate(cx, cy - (1 - back) * H * 0.04);
+        ctx.scale(bs, bs);
+        drawFistShape(true);
+        ctx.restore();
+      }
+    }
+  } else if (t <= holdEnd) {
+    // 阶段二:停留——钉在画面中央。命中瞬间一个快速回弹,随后稳住
+    const h = t - T.impactAt;
+    const recoil = Math.exp(-h / 90) * 0.06;   // 命中回弹,约 90ms 内衰减
+    scale = FIST_MAX_SCALE - recoil;
+    alpha = 1;
+    y = cy;
+    angle = 0;
+  } else {
+    // 阶段三:缓缓收回——缩小后退 + 淡出,像拳头抽回
+    const r = clamp((t - holdEnd) / RETRACT_MS, 0, 1);
+    const eased = r * r * (3 - 2 * r);
+    scale = FIST_MAX_SCALE - eased * (FIST_MAX_SCALE - 0.22);  // 缩回到很小
+    alpha = 1 - eased;
+    y = cy - eased * H * 0.05;                  // 略向上后退
+    angle = -eased * 0.1;
+  }
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(cx, y);
+  ctx.rotate(angle);
+  ctx.scale(scale, scale);
+  drawFistShape(false);
+  ctx.restore();
+}
+
+/** 画一个正面握拳。以原点为中心,基准尺寸约 320×290(靠 drawFist 缩放)。
+
+    关键是让**剪影本身**就能认出是拳头:顶边是四个凸起的指节包,
+    不是一条直的圆角边;整体一条粗深描边勾轮廓;内部手指分缝加深。
+
+    shadowOnly=true 时只填一个纯色剪影(给拖影用)。
+*/
+function fistSilhouettePath() {
+  // 单条闭合路径:左侧上行 → 顶边四个指节鼓包 → 右侧下行 → 底边(腕)。
+  ctx.beginPath();
+  ctx.moveTo(-150, 120);          // 左下(腕部)
+  ctx.lineTo(-150, -56);          // 左侧上行到第一指节根
+  // 顶边:四个指节鼓包(控制点越高,鼓包越明显)
+  ctx.quadraticCurveTo(-112, -102, -74, -56);
+  ctx.quadraticCurveTo(-37, -100, 1, -56);
+  ctx.quadraticCurveTo(38, -100, 76, -56);
+  ctx.quadraticCurveTo(113, -102, 150, -56);
+  ctx.lineTo(150, 120);           // 右侧下行
+  ctx.quadraticCurveTo(0, 152, -150, 120);  // 底边(腕)带一点圆
+  ctx.closePath();
+}
+
+function drawFistShape(shadowOnly) {
+  // 优先用素材图:以原点为中心铺一张,尺寸约 360(和矢量版基准接近)。
+  // drawFist 已经做了 translate/scale,这里只管在局部坐标系里画。
+  if (fistImageReady && fistImage) {
+    const size = 360;
+    if (shadowOnly) {
+      // 拖影:半透明暗色剪影。用 drawImage 再叠一层暗色不好做,
+      // 这里简单用较低不透明度画原图,够表现速度残影。
+      ctx.globalAlpha *= 0.5;
+      ctx.drawImage(fistImage, -size / 2, -size / 2, size, size);
+      return;
+    }
+    ctx.drawImage(fistImage, -size / 2, -size / 2, size, size);
+    return;
+  }
+
+  // ---- 以下是图片加载失败时的矢量回退 ----
+  if (shadowOnly) {
+    fistSilhouettePath();
+    ctx.fillStyle = "#d4dbe3";
+    ctx.fill();
+    return;
+  }
+
+  // ---- 1. 剪影填充(肤色渐变)----
+  fistSilhouettePath();
+  const skin = ctx.createLinearGradient(0, -100, 0, 150);
+  skin.addColorStop(0, "#ffe6d0");   // 指节受光
+  skin.addColorStop(0.5, "#efbb8e");
+  skin.addColorStop(1, "#c6855a");   // 腕部背光
+  ctx.fillStyle = skin;
+  ctx.fill();
+
+  // ---- 2. 整体粗描边:这是"看得清轮廓"的关键 ----
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "#4a2d18";
+  ctx.lineWidth = 7;
+  ctx.stroke();
+
+  // 内部细节不要溢出剪影
+  ctx.save();
+  fistSilhouettePath();
+  ctx.clip();
+
+  // ---- 3. 指节高光(四个鼓包顶部)----
+  const knuckleX = [-112, -37, 38, 113];
+  for (const kx of knuckleX) {
+    ctx.beginPath();
+    ctx.ellipse(kx, -58, 30, 24, 0, 0, Math.PI * 2);
+    const kg = ctx.createRadialGradient(kx, -68, 3, kx, -58, 34);
+    kg.addColorStop(0, "#fff1e2");
+    kg.addColorStop(1, "rgba(215,155,110,0)");
+    ctx.fillStyle = kg;
+    ctx.fill();
+  }
+
+  // ---- 4. 四根手指的分缝(竖向深沟),让"四根手指攥着"立住 ----
+  ctx.strokeStyle = "rgba(120, 68, 36, 0.75)";
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  for (const sx of [-74, 1, 76]) {
+    ctx.beginPath();
+    ctx.moveTo(sx, -48);
+    ctx.lineTo(sx, 92);
+    ctx.stroke();
+  }
+
+  // ---- 5. 指节横向折痕(手指第一节与第二节之间)----
+  ctx.strokeStyle = "rgba(120, 68, 36, 0.45)";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-150, 40);
+  ctx.quadraticCurveTo(0, 54, 150, 40);
+  ctx.stroke();
+
+  ctx.restore();  // 解除 clip
+
+  // ---- 6. 拇指:横压在手指前方(拳头正面的标志),单独描边 ----
+  ctx.beginPath();
+  ctx.moveTo(-150, 66);
+  ctx.quadraticCurveTo(-182, 94, -150, 130);
+  ctx.quadraticCurveTo(-60, 152, 48, 138);
+  ctx.quadraticCurveTo(78, 132, 72, 104);
+  ctx.quadraticCurveTo(0, 116, -150, 66);
+  ctx.closePath();
+  const thumb = ctx.createLinearGradient(0, 66, 0, 150);
+  thumb.addColorStop(0, "#f3c89d");
+  thumb.addColorStop(1, "#bd7d4c");
+  ctx.fillStyle = thumb;
+  ctx.fill();
+  ctx.strokeStyle = "#4a2d18";
+  ctx.lineWidth = 6;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+}
+
+/* --------------------------- 提醒文字层 --------------------------- */
+
+function showNotice() {
+  noticeShown = true;
+  noticeEl.classList.add("show");
+  // 下一帧再加 visible,让 transition 生效
+  requestAnimationFrame(() => noticeEl.classList.add("visible"));
+  hintEl.classList.add("visible");
+  document.body.style.cursor = "auto";
+}
+
+document.getElementById("btn-close").addEventListener("click", () => {
+  pywebview.api.close_window();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") pywebview.api.close_window();
+});
+
+/* ----------------------------- 调试 ----------------------------- */
+
+const debug = new URLSearchParams(location.search).has("debug");
+if (debug) document.getElementById("debug-bar").classList.add("show");
+
+document.querySelector("[data-skip]").addEventListener("click", () => {
+  if (!noticeShown) showNotice();
+});
+document.querySelector("[data-replay]").addEventListener("click", () => {
+  location.reload();
+});
+
+/* ----------------------------- 启动 ----------------------------- */
+
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// 主屏尺寸拿到之前先按窗口初值铺一次,避免首帧空白
+resize();
+buildShards();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

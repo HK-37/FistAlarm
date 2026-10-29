@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 运行时产物(闹钟数据、日志、截图在 %APPDATA%,不在仓库里;
+# 这几条是防手滑把临时文件放进仓库)
+*.log
+shots/
+
+# 本地开发环境配置(Claude Code 的 hooks / 红线规则 / skill 联接等,
+# 与闹钟功能无关,且含本机路径,不随开源仓库分发)
+.claude/
+
+# 编辑器
+.idea/
+.vscode/
+
+# AI 协作约定(本项目的开发规范,不随开源仓库公开)
+CLAUDE.md

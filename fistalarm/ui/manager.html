@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>拳头闹钟 — 管理</title>
+<style>
+  /* 深色主题。所有色值集中在这里。 */
+  :root {
+    --bg: #12161c;
+    --panel: #1a2029;
+    --panel-hi: #212936;
+    --ink: #e8eef6;
+    --ink-dim: #8e9aa8;
+    --accent: #ff4d3d;
+    --ok: #3ecf8e;
+    --border: #2a3441;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px;
+    padding: 22px;
+    min-height: 100vh;
+  }
+
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  h1 { font-size: 20px; font-weight: 600; }
+  #status { font-size: 12px; color: var(--ink-dim); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  th {
+    text-align: left; font-weight: 500; font-size: 12px;
+    color: var(--ink-dim);
+    padding: 10px 14px;
+    background: var(--panel-hi);
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr.disabled td { opacity: 0.42; }
+
+  .time { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .empty { text-align: center; color: var(--ink-dim); padding: 40px; }
+
+  button {
+    font-family: inherit; font-size: 13px;
+    padding: 7px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-hi);
+    color: var(--ink);
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  button:hover { border-color: #3a4757; }
+  button.primary { background: rgba(255, 77, 61, 0.18); border-color: var(--accent); }
+  button.danger:hover { border-color: var(--accent); color: var(--accent); }
+  button.ghost { background: transparent; }
+
+  .row-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  footer { margin-top: 16px; display: flex; gap: 10px; }
+
+  /* 底部设置条:每个设置项"标签在上、控件在下",整条按底边对齐,
+     这样文字标签和输入框不会错位(之前裸排 label+input 对不齐)。 */
+  #default-bar {
+    display: flex; align-items: flex-end; gap: 16px;
+    margin-top: 16px; padding: 14px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .setting-item { display: flex; flex-direction: column; gap: 6px; }
+  .setting-item > label {
+    margin: 0; font-size: 12px; color: var(--ink-dim); white-space: nowrap;
+  }
+  #default-bar button { align-self: flex-end; }
+  #default-hint {
+    align-self: center; font-size: 12px; color: var(--ink-dim); min-width: 48px;
+  }
+
+  /* 表单弹层 */
+  #overlay {
+    position: fixed; inset: 0;
+    background: rgba(6, 9, 13, 0.72);
+    display: none;
+    align-items: center; justify-content: center;
+  }
+  #overlay.show { display: flex; }
+
+  #form {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: 420px;
+  }
+  #form h2 { font-size: 16px; margin-bottom: 18px; font-weight: 600; }
+
+  .field { margin-bottom: 16px; }
+  label { display: block; font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; }
+
+  input[type="text"], input[type="time"], input[type="date"], select {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--ink);
+    font-family: inherit; font-size: 14px;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .weekdays { display: flex; gap: 6px; flex-wrap: wrap; }
+  .weekdays label {
+    display: flex; align-items: center; gap: 5px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--ink);
+    font-size: 13px;
+    cursor: pointer;
+    margin: 0;
+  }
+  .weekdays input { accent-color: var(--accent); }
+  /* 频率快捷按钮:选中项高亮,让"当前是几分钟"一眼可见 */
+  #interval-presets button { padding: 6px 14px; }
+  #interval-presets button.active {
+    border-color: var(--accent);
+    color: #fff;
+    background: rgba(255, 77, 61, 0.22);
+  }
+
+  #error { color: var(--accent); font-size: 13px; min-height: 18px; margin-bottom: 8px; }
+
+  .form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>拳头闹钟</h1>
+    <span id="status">就绪</span>
+  </header>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:90px">时间</th>
+        <th style="width:150px">重复</th>
+        <th>备注</th>
+        <th style="width:130px">下次</th>
+        <th style="width:80px">开关</th>
+        <th style="width:150px"></th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td class="empty" colspan="6">正在加载…</td></tr>
+    </tbody>
+  </table>
+
+  <div id="default-bar">
+    <div class="setting-item" style="flex:1">
+      <label for="f-default">默认提醒文案</label>
+      <input type="text" id="f-default" maxlength="40"
+             placeholder="哪条闹钟没写备注，就显示这句">
+    </div>
+    <div class="setting-item">
+      <label for="f-hold">拳头停留</label>
+      <div style="display:flex;align-items:center;gap:6px">
+        <input type="number" id="f-hold" min="1" max="3" step="0.5" value="2"
+               style="width:72px" title="拳头砸碎屏幕后停留几秒再收回（1~3）">
+        <span style="color:var(--ink-dim)">秒</span>
+      </div>
+    </div>
+    <button class="ghost" id="btn-save-default">保存</button>
+    <span id="default-hint"></span>
+  </div>
+
+  <footer>
+    <button class="primary" id="btn-add">＋ 新增闹钟</button>
+    <button class="ghost" id="btn-test">试播一次</button>
+    <button class="ghost" id="btn-refresh" style="margin-left:auto">刷新</button>
+  </footer>
+
+  <div id="overlay">
+    <form id="form">
+      <h2 id="form-title">新增闹钟</h2>
+      <div id="error"></div>
+
+      <div class="field">
+        <label for="f-time" id="f-time-label">时间</label>
+        <input type="time" id="f-time" value="09:00" required>
+      </div>
+
+      <div class="field">
+        <label for="f-repeat">重复</label>
+        <select id="f-repeat">
+          <option value="daily">每天</option>
+          <option value="weekdays">工作日（周一至周五）</option>
+          <option value="custom">自选星期</option>
+          <option value="interval">每隔一段时间（久坐提醒）</option>
+          <option value="once">仅一次</option>
+        </select>
+      </div>
+
+      <div class="field" id="weekdays-field" hidden>
+        <label>星期</label>
+        <div class="weekdays" id="weekdays"></div>
+      </div>
+
+      <div class="field" id="interval-field" hidden>
+        <label>提醒频率</label>
+        <div class="weekdays" id="interval-presets"></div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
+          <span style="color:var(--ink-dim)">每隔</span>
+          <input type="number" id="f-interval" min="1" max="1440" step="1" value="30"
+                 style="width:80px">
+          <span style="color:var(--ink-dim)">分钟提醒一次</span>
+        </div>
+      </div>
+
+      <div class="field" id="end-field" hidden>
+        <label>结束时间</label>
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer">
+            <input type="radio" name="end-mode" value="none" checked> 不限（到午夜，次日继续）
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer">
+            <input type="radio" name="end-mode" value="set"> 指定
+          </label>
+          <input type="time" id="f-end" value="18:00" style="width:120px" disabled>
+        </div>
+      </div>
+
+      <div class="field" id="date-field" hidden>
+        <label for="f-date">日期</label>
+        <input type="date" id="f-date">
+      </div>
+
+      <div class="field">
+        <label for="f-message">备注（会显示在碎屏动画上）</label>
+        <input type="text" id="f-message" maxlength="40" placeholder="例如：改起来开会了">
+      </div>
+
+      <div class="form-actions">
+        <button type="button" class="ghost" id="btn-cancel">取消</button>
+        <button type="submit" class="primary">保存</button>
+      </div>
+    </form>
+  </div>
+
+<script>
+"use strict";
+
+// 全局错误兜底:任何 JS 报错都在页面顶部弹红条显示,并尽量回传后端记日志。
+// 否则一旦脚本中途抛错,页面就是一片黑、什么都看不到(排查无门)。
+window.onerror = function (msg, src, line, col, err) {
+  try {
+    let bar = document.getElementById("js-error-bar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "js-error-bar";
+      bar.style.cssText =
+        "position:fixed;top:0;left:0;right:0;z-index:9999;background:#c0392b;" +
+        "color:#fff;padding:10px 14px;font-size:13px;white-space:pre-wrap";
+      document.body.appendChild(bar);
+    }
+    bar.textContent = `页面脚本出错：${msg}\n位置：${src}:${line}:${col}`;
+    if (window.pywebview && pywebview.api && pywebview.api.log_js_error) {
+      pywebview.api.log_js_error(`${msg} @ ${src}:${line}:${col}`);
+    }
+  } catch (e) { /* 兜底里再出错就算了 */ }
+  return false;
+};
+
+const WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+const rowsEl = document.getElementById("rows");
+const overlay = document.getElementById("overlay");
+const form = document.getElementById("form");
+const errorEl = document.getElementById("error");
+const weekdaysField = document.getElementById("weekdays-field");
+const dateField = document.getElementById("date-field");
+const weekdaysEl = document.getElementById("weekdays");
+const repeatEl = document.getElementById("f-repeat");
+
+let editingId = null;
+
+/* --------------------------- 表格渲染 --------------------------- */
+
+async function refresh() {
+  let alarms;
+  try {
+    alarms = await pywebview.api.list_alarms();
+  } catch (err) {
+    rowsEl.innerHTML =
+      '<tr><td class="empty" colspan="6">读取闹钟失败：' + escapeHtml(String(err)) + '</td></tr>';
+    return;
+  }
+  rowsEl.innerHTML = "";
+
+  if (!alarms.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td class="empty" colspan="6">还没有闹钟。点左下角「＋ 新增闹钟」添加' +
+      '，可设置触发时间和重复方式（每天 / 工作日 / 自选星期 / 仅一次）。</td>';
+    rowsEl.appendChild(tr);
+  }
+
+  for (const alarm of alarms) {
+    const tr = document.createElement("tr");
+    if (!alarm.enabled) tr.classList.add("disabled");
+
+    const weekdays = (alarm.weekdays || []).map((d) => WEEKDAY_NAMES[d]).join("、");
+    tr.innerHTML = `
+      <td class="time">${escapeHtml(alarm.time)}</td>
+      <td>${escapeHtml(alarm.repeat_label || alarm.repeat)}</td>
+      <td>${escapeHtml(alarm.message || "—")}</td>
+      <td>${escapeHtml(alarm.next_at || "—")}</td>
+      <td>
+        <input type="checkbox" ${alarm.enabled ? "checked" : ""} data-toggle="${alarm.id}">
+      </td>
+      <td>
+        <div class="row-actions">
+          <button data-edit="${alarm.id}">编辑</button>
+          <button class="danger" data-del="${alarm.id}">删除</button>
+        </div>
+      </td>
+    `;
+    rowsEl.appendChild(tr);
+  }
+
+  // 事件用委托绑定,避免每次渲染都要重新挂
+  rowsEl.querySelectorAll("[data-toggle]").forEach((box) => {
+    box.addEventListener("change", async (event) => {
+      const id = event.target.dataset.toggle;
+      await pywebview.api.toggle_alarm(id, event.target.checked);
+      refresh();
+    });
+  });
+  rowsEl.querySelectorAll("[data-edit]").forEach((button) => {
+    button.addEventListener("click", () => openForm(button.dataset.edit));
+  });
+  rowsEl.querySelectorAll("[data-del]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await pywebview.api.delete_alarm(button.dataset.del);
+      refresh();
+    });
+  });
+
+  document.getElementById("status").textContent = await pywebview.api.status_text();
+}
+
+/* --------------------------- 表单 --------------------------- */
+
+function buildWeekdayBoxes() {
+  weekdaysEl.innerHTML = "";
+  WEEKDAY_NAMES.forEach((name, index) => {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" value="${index}"> ${name}`;
+    weekdaysEl.appendChild(label);
+  });
+}
+
+function buildIntervalPresets() {
+  const presets = [5, 10, 15, 30, 45, 60];
+  const box = document.getElementById("interval-presets");
+  box.innerHTML = "";
+  presets.forEach((m) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.minutes = m;
+    btn.textContent = m < 60 ? `${m} 分钟` : "1 小时";
+    btn.addEventListener("click", () => {
+      document.getElementById("f-interval").value = m;
+      syncIntervalHighlight();
+    });
+    box.appendChild(btn);
+  });
+  // 数字框手动改动时,同步快捷按钮的高亮(让"当前到底是几分钟"一目了然)
+  document.getElementById("f-interval").addEventListener("input", syncIntervalHighlight);
+}
+
+function syncIntervalHighlight() {
+  const cur = String(Number(document.getElementById("f-interval").value));
+  document.querySelectorAll("#interval-presets button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.minutes === cur);
+  });
+}
+
+function syncFields() {
+  const kind = repeatEl.value;
+  weekdaysField.hidden = kind !== "custom";
+  dateField.hidden = kind !== "once";
+  document.getElementById("interval-field").hidden = kind !== "interval";
+  document.getElementById("end-field").hidden = kind !== "interval";
+  // 间隔模式下「时间」其实是「开始时间」,换个标签让人看懂
+  document.getElementById("f-time-label").textContent =
+    kind === "interval" ? "开始时间" : "时间";
+  if (kind === "interval") syncIntervalHighlight();
+}
+
+// 结束时间单选:选"指定"才启用那个 time 输入
+document.querySelectorAll('input[name="end-mode"]').forEach((radio) => {
+  radio.addEventListener("change", () => {
+    document.getElementById("f-end").disabled =
+      document.querySelector('input[name="end-mode"]:checked').value !== "set";
+  });
+});
+
+function openForm(alarmId) {
+  editingId = alarmId || null;
+  errorEl.textContent = "";
+  document.getElementById("form-title").textContent = editingId ? "编辑闹钟" : "新增闹钟";
+
+  // 重置
+  document.getElementById("f-time").value = "09:00";
+  document.getElementById("f-message").value = "";
+  repeatEl.value = "daily";
+  document.getElementById("f-date").valueAsDate = new Date();
+  weekdaysEl.querySelectorAll("input").forEach((box) => { box.checked = false; });
+  document.getElementById("f-interval").value = 30;
+  document.querySelector('input[name="end-mode"][value="none"]').checked = true;
+  document.getElementById("f-end").value = "18:00";
+  document.getElementById("f-end").disabled = true;
+  syncFields();
+
+  if (editingId) {
+    fillForm(editingId);
+  }
+  overlay.classList.add("show");
+}
+
+async function fillForm(alarmId) {
+  const alarms = await pywebview.api.list_alarms();
+  const alarm = alarms.find((item) => item.id === alarmId);
+  if (!alarm) return;
+
+  document.getElementById("f-time").value = alarm.time;
+  document.getElementById("f-message").value = alarm.message || "";
+  repeatEl.value = alarm.repeat;
+  if (alarm.on_date) document.getElementById("f-date").value = alarm.on_date;
+  weekdaysEl.querySelectorAll("input").forEach((box) => {
+    box.checked = (alarm.weekdays || []).includes(Number(box.value));
+  });
+  if (alarm.interval_minutes) document.getElementById("f-interval").value = alarm.interval_minutes;
+  if (alarm.active_end) {
+    document.querySelector('input[name="end-mode"][value="set"]').checked = true;
+    document.getElementById("f-end").value = alarm.active_end;
+    document.getElementById("f-end").disabled = false;
+  } else {
+    document.querySelector('input[name="end-mode"][value="none"]').checked = true;
+    document.getElementById("f-end").disabled = true;
+  }
+  syncFields();
+}
+
+function closeForm() {
+  overlay.classList.remove("show");
+  editingId = null;
+}
+
+repeatEl.addEventListener("change", syncFields);
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  errorEl.textContent = "";
+
+  const kind = repeatEl.value;
+  const payload = {
+    time: document.getElementById("f-time").value,
+    repeat: kind,
+    message: document.getElementById("f-message").value.trim(),
+    enabled: true,
+  };
+  if (editingId) payload.id = editingId;
+  if (kind === "custom") {
+    payload.weekdays = Array.from(weekdaysEl.querySelectorAll("input:checked"))
+      .map((box) => Number(box.value));
+    if (!payload.weekdays.length) {
+      errorEl.textContent = "自选星期至少要勾一天";
+      return;
+    }
+  }
+  if (kind === "once") {
+    payload.on_date = document.getElementById("f-date").value;
+    if (!payload.on_date) {
+      errorEl.textContent = "请选择日期";
+      return;
+    }
+  }
+  if (kind === "interval") {
+    const minutes = Number(document.getElementById("f-interval").value);
+    if (!minutes || minutes < 1) {
+      errorEl.textContent = "请填写有效的提醒频率（≥1 分钟）";
+      return;
+    }
+    payload.interval_minutes = minutes;
+    const endMode = document.querySelector('input[name="end-mode"]:checked').value;
+    if (endMode === "set") {
+      const end = document.getElementById("f-end").value;
+      if (!end) {
+        errorEl.textContent = "请选择结束时间";
+        return;
+      }
+      if (end <= payload.time) {
+        errorEl.textContent = "结束时间必须晚于开始时间";
+        return;
+      }
+      payload.active_end = end;
+    }
+  }
+
+  const result = await pywebview.api.save_alarm(payload);
+  if (!result.ok) {
+    errorEl.textContent = result.error || "保存失败";
+    return;
+  }
+  closeForm();
+  refresh();
+});
+
+document.getElementById("btn-add").addEventListener("click", () => openForm(null));
+document.getElementById("btn-cancel").addEventListener("click", closeForm);
+document.getElementById("btn-refresh").addEventListener("click", refresh);
+document.getElementById("btn-test").addEventListener("click", async () => {
+  document.getElementById("status").textContent = "正在试播…";
+  const result = await pywebview.api.test_strike();
+  document.getElementById("status").textContent = result.ok ? "试播已完成" : (result.error || "试播失败");
+});
+
+// 默认文案 + 拳头停留时长:进来时回填,点保存一起写回
+const defaultInput = document.getElementById("f-default");
+const holdInput = document.getElementById("f-hold");
+const defaultHint = document.getElementById("default-hint");
+async function loadDefaultMessage() {
+  defaultInput.value = await pywebview.api.get_default_message();
+  holdInput.value = await pywebview.api.get_fist_hold_seconds();
+}
+document.getElementById("btn-save-default").addEventListener("click", async () => {
+  const msgResult = await pywebview.api.set_default_message(defaultInput.value);
+  const holdResult = await pywebview.api.set_fist_hold_seconds(holdInput.value);
+  if (holdResult.ok) holdInput.value = holdResult.value;  // 回填夹紧后的值
+  defaultHint.textContent = msgResult.ok ? "已保存" : (msgResult.error || "保存失败");
+  setTimeout(() => { defaultHint.textContent = ""; }, 2000);
+});
+overlay.addEventListener("click", (event) => { if (event.target === overlay) closeForm(); });
+window.addEventListener("keydown", (event) => { if (event.key === "Escape") closeForm(); });
+
+/* --------------------------- 工具 --------------------------- */
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text == null ? "" : String(text);
+  return div.innerHTML;
+}
+
+buildWeekdayBoxes();
+buildIntervalPresets();
+
+// pywebview 的 JS 桥(window.pywebview)是**异步注入**的:页面脚本刚跑时它还不存在,
+// 必须等 `pywebviewready` 事件才能调 pywebview.api.*。之前没等就调,
+// 直接报 "pywebview is not defined",表格显示"读取闹钟失败"(实际踩过)。
+function loadData() {
+  refresh();
+  loadDefaultMessage();
+}
+
+if (window.pywebview) {
+  // 桥已就绪(少见,但事件可能已错过)
+  loadData();
+} else {
+  window.addEventListener("pywebviewready", loadData, { once: true });
+}
+</script>
+</body>
+</html>

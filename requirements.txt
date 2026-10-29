@@ -1,0 +1,15 @@
+# FistAlarm 运行依赖
+#
+# 装法：
+#   python -m pip install -r requirements.txt
+#
+# 说明：
+#   pywebview 在 Windows 上使用系统自带的 WebView2 渲染动画，
+#   不需要额外装浏览器内核（Win11 自带；Win10 若缺失需装
+#   "Microsoft Edge WebView2 Runtime"）。
+#   pystray 负责托盘图标；mss 负责截屏；Pillow 用于生成托盘图标。
+
+pywebview>=5.0
+pystray>=0.19
+mss>=9.0
+Pillow>=10.0

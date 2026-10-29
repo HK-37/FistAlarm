@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fistalarm"
+version = "0.1.0"
+description = "Windows 桌面闹钟:到点用拳头砸碎屏幕来提醒"
+requires-python = ">=3.11"
+dependencies = [
+    "pywebview>=5.0",
+    "pystray>=0.19",
+    "mss>=9.0",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.gui-scripts]
+# 托盘模式不该弹控制台窗口,所以用 gui-scripts
+fistalarm = "fistalarm.__main__:main"
+
+[tool.setuptools]
+packages = ["fistalarm", "fistalarm.ui"]
+
+[tool.setuptools.package-data]
+"fistalarm.ui" = ["*.html", "assets/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
