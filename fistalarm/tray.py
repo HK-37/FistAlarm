@@ -159,7 +159,7 @@ def run_tray(store: AlarmStore | None = None) -> int:
         pystray.MenuItem(lambda _item: app.upcoming_text(), None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("闹钟管理…", on_manager, default=True),
-        pystray.MenuItem("试播一次", on_test),
+        pystray.MenuItem("试播(用默认文案)", on_test),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", on_quit),
     )
