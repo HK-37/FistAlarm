@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fistalarm"
-version = "0.1.0"
+# 版本号只在 fistalarm/__init__.py 的 __version__ 写一处,这里动态读取。
+# 检查更新靠它和 GitHub 上的 tag 比较,两处写容易改漏。
+dynamic = ["version"]
 description = "Windows 桌面闹钟:到点用拳头砸碎屏幕来提醒"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,6 +25,9 @@ fistalarm = "fistalarm.__main__:main"
 
 [tool.setuptools]
 packages = ["fistalarm", "fistalarm.ui"]
+
+[tool.setuptools.dynamic]
+version = { attr = "fistalarm.__version__" }
 
 [tool.setuptools.package-data]
 "fistalarm.ui" = ["*.html", "assets/*.png"]

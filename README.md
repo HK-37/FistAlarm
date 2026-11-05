@@ -16,6 +16,7 @@
 - **提醒文案、拳头停留时长都可配**——在管理界面里改,改完即时生效。
 - **截图失败也能响**——全屏独占程序等场景截不到图时,自动降级为纯黑背景,提醒照常。
 - **托盘常驻**——托盘菜单能看"接下来要响的几条"、开管理界面、试播。
+- **检查更新**——启动后和之后每天自动在后台查一次 GitHub 上有没有新版本,有就在托盘菜单里出现下载入口(不弹框打扰);在托盘菜单手动点"检查更新"会弹对话框告诉你结果,有新版时可一键打开下载页。只提醒,不会自动下载或替换程序。
 - **一个 exe 两种模式**——托盘常驻与动画播放共用同一个可执行文件。
 
 ## 安装与运行
@@ -43,6 +44,9 @@ python -m fistalarm --test
 # 命令行管理(调试用)
 python -m fistalarm --list
 python -m fistalarm --add 09:00 --message "开晨会"
+
+# 检查一次更新,结果写入 tray.log(排查检查更新问题用)
+python -m fistalarm --check-update
 ```
 
 ### 自己打包 exe
@@ -59,6 +63,7 @@ python -m PyInstaller FistAlarm.spec --noconfirm
 |------|------|
 | 闹钟列表 | `%APPDATA%\FistAlarm\alarms.json` |
 | 播放日志 | `%APPDATA%\FistAlarm\player.log` |
+| 托盘日志(检查更新等) | `%APPDATA%\FistAlarm\tray.log` |
 | 截图缓存 | `%APPDATA%\FistAlarm\shots\` |
 
 `alarms.json` 是可读的 JSON,可以直接手改。文件损坏时程序不会静默覆盖,而是改名成
@@ -75,6 +80,7 @@ fistalarm/
 ├── player.py         拉起播放器子进程 / 管理窗口子进程,读退出码
 ├── runner.py         编排:对表 → 截图 → 播放
 ├── tray.py           托盘常驻(后台线程跑调度,文件变了就重新读盘)
+├── updater.py        检查更新(读 GitHub releases/latest 的跳转地址,和本地版本比较)
 ├── strike_player.py  动画播放器:全屏窗口 + WebView2
 ├── procutil.py       进程工具:单实例锁等
 ├── paths.py          资源路径(兼容源码运行与 PyInstaller 打包)
@@ -99,8 +105,8 @@ fistalarm/
 python -m pytest tests/ -q
 ```
 
-155 个用例,覆盖跨日、跨周(周末跳过)、月末、年末、间隔模式各种边界、单次闹钟生命周期、
-截图失败降级、同分钟内不重复触发、多进程共享文件不互相覆盖等。
+188 个用例,覆盖跨日、跨周(周末跳过)、月末、年末、间隔模式各种边界、单次闹钟生命周期、
+截图失败降级、同分钟内不重复触发、多进程共享文件不互相覆盖、检查更新的版本比较与提醒规则等。
 
 动画是视觉产物,靠 `--test` 人工验收,不适合断言。
 
@@ -109,6 +115,20 @@ python -m pytest tests/ -q
 - 动画页支持 `?debug` 参数,会出现"重播 / 跳到结尾"按钮,便于反复调效果。
 - 改动画时优先调 `ui/strike.html` 顶部的 `cfg`(碎片密度、屏震强度)与 `T`(时序)。
 - `player.log` 记录了每次播放各节点的耗时,排查"卡顿"时看它。
+
+## 发布新版本
+
+检查更新是拿 GitHub 上**最新正式版的 tag** 和程序里的 `__version__` 比较,所以发版要按下面的顺序:
+
+1. 改 `fistalarm/__init__.py` 里的 `__version__`(版本号只在这一处写,`pyproject.toml` 自动读取)
+2. `python -m pytest tests/ -q` 全部通过
+3. `python -m PyInstaller FistAlarm.spec --noconfirm` 打包出 `dist/FistAlarm.exe`
+4. 提交代码,打 tag 并推送:`git tag -a vX.Y.Z -m "vX.Y.Z"` → `git push origin vX.Y.Z`
+5. 在 GitHub 上 Draft a new release:选刚推的 tag,上传 `dist/FistAlarm.exe`,Release label 选 **None**
+
+tag 必须是 `v` 加纯数字(如 `v0.2.0`)。不要勾选 Pre-release:GitHub 不把预发布版当作"最新版",用户就收不到提醒。
+
+检查更新只访问 `https://github.com/HK-37/FistAlarm/releases/latest`,不上传任何闹钟数据。
 
 ## 素材说明
 

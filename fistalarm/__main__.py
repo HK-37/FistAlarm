@@ -37,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="拳头停留秒数(配合 --strike,1~3)")
     parser.add_argument("--test", action="store_true", help="立刻试播一次动画")
     parser.add_argument("--manage", action="store_true", help="打开管理窗口(托盘内部调用)")
+    parser.add_argument(
+        "--check-update", action="store_true", help="检查一次更新,结果写入 tray.log(诊断用)"
+    )
     parser.add_argument("--list", action="store_true", help="打印现有闹钟")
     parser.add_argument("--add", metavar="HH:MM", help="新增一条每天重复的闹钟")
     parser.add_argument("--message", metavar="文字", default="", help="配合 --add 使用")
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_strike(_default_message(), _try_capture(), _default_hold())
     if args.manage:
         return _run_manage()
+    if args.check_update:
+        return _run_check_update()
     if args.list:
         return _run_list()
     if args.add:
@@ -122,6 +127,23 @@ def _run_tray() -> int:
 
 
 # ------------------------------ 管理窗口模式 ------------------------------
+
+def _run_check_update() -> int:
+    """检查一次更新并记日志。打包后的 exe 没有控制台,结果看 tray.log。"""
+    from . import updater
+    from .tray import tray_log
+
+    tray_log("命令行 --check-update 开始")
+    try:
+        result = updater.check_for_update()
+    except Exception as exc:
+        tray_log(f"命令行检查异常：{exc!r}")
+        return EXIT_ERROR
+    line = f"命令行检查结果:status={result.status} latest={result.latest} error={result.error}"
+    tray_log(line)
+    print(line)
+    return 0
+
 
 def _run_manage() -> int:
     """独立进程打开管理窗口。托盘用 --manage 拉起它,避免两个 GUI 循环冲突。"""
