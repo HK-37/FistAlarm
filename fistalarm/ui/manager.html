@@ -186,6 +186,12 @@
         <span style="color:var(--ink-dim)">秒</span>
       </div>
     </div>
+    <div class="setting-item">
+      <label for="f-autostart">开机自启</label>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;height:34px;cursor:pointer">
+        <input type="checkbox" id="f-autostart"> <span id="autostart-text">开机时自动启动</span>
+      </label>
+    </div>
     <button class="ghost" id="btn-save-default">保存</button>
     <span id="default-hint"></span>
   </div>
@@ -546,10 +552,25 @@ document.getElementById("btn-test").addEventListener("click", async () => {
 const defaultInput = document.getElementById("f-default");
 const holdInput = document.getElementById("f-hold");
 const defaultHint = document.getElementById("default-hint");
+const autostartInput = document.getElementById("f-autostart");
+const autostartText = document.getElementById("autostart-text");
 async function loadDefaultMessage() {
   defaultInput.value = await pywebview.api.get_default_message();
   holdInput.value = await pywebview.api.get_fist_hold_seconds();
+  const auto = await pywebview.api.get_autostart();
+  autostartInput.checked = !!auto.enabled;
+  autostartInput.disabled = !auto.available;
+  autostartText.textContent = auto.available ? "开机时自动启动" : "打包成 exe 后可用";
 }
+// 勾选即时生效(直接写注册表),不跟「保存」按钮走
+autostartInput.addEventListener("change", async () => {
+  const result = await pywebview.api.set_autostart(autostartInput.checked);
+  if (!result.ok) {
+    autostartInput.checked = !autostartInput.checked;  // 失败则回弹
+    defaultHint.textContent = result.error || "设置失败";
+    setTimeout(() => { defaultHint.textContent = ""; }, 2500);
+  }
+});
 document.getElementById("btn-save-default").addEventListener("click", async () => {
   const msgResult = await pywebview.api.set_default_message(defaultInput.value);
   const holdResult = await pywebview.api.set_fist_hold_seconds(holdInput.value);

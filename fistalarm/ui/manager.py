@@ -115,6 +115,26 @@ class _ManagerApi:
         self.store.save()
         return {"ok": True, "value": self.store.fist_hold_seconds}
 
+    def get_autostart(self) -> dict:
+        """开机自启开关状态。available=False 时(源码运行)前端应置灰。"""
+        from ..autostart import AutoStart
+
+        auto = AutoStart()
+        return {"available": auto.available, "enabled": auto.is_enabled()}
+
+    def set_autostart(self, enabled: bool) -> dict:
+        """开/关开机自启(写当前用户注册表 Run 键)。"""
+        from ..autostart import AutoStart
+
+        auto = AutoStart()
+        if not auto.available:
+            return {"ok": False, "error": "开机自启仅在打包成 exe 后可用"}
+        try:
+            auto.set(bool(enabled))
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "enabled": auto.is_enabled()}
+
     def status_text(self) -> str:
         """状态栏:独立进程里没有 runner 统计,显示闹钟条数与数据文件位置。"""
         total = len(self.store.alarms)
